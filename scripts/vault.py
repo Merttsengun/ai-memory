@@ -251,14 +251,23 @@ def rules_link(pid: str, name: str) -> str:
     return f"[[{pid}/rules|{t('v_rules_of', name=name)}]]"
 
 
-def footer_for(pid: str, name: str) -> str:
-    """Links at the bottom of a daily note: project page, its rules (only if they exist,
-    so no link points at a missing note) and home."""
+# Ends every footer we write (an HTML comment: invisible in Obsidian). Only lines carrying
+# it are ever rewritten later, so a navigation line the user wrote is never touched.
+FOOTER_MARK = "<!-- ai-memory -->"
+
+
+def _footer_links(pid: str, name: str) -> str:
     parts = [project_page_link(pid, name)]
     if (PROJECTS_ROOT / pid / "rules.md").is_file():
         parts.append(rules_link(pid, name))
     parts.append(home_link())
     return " · ".join(parts)
+
+
+def footer_for(pid: str, name: str) -> str:
+    """Links at the bottom of a daily note: project page, its rules (only if they exist,
+    so no link points at a missing note) and home."""
+    return f"{_footer_links(pid, name)} {FOOTER_MARK}"
 
 
 def daily_footer(pid: str) -> str:
@@ -423,23 +432,13 @@ LEGACY_FOOTERS = {
 }
 
 
-def _our_footer(pid: str) -> re.Pattern[str]:
-    """Exactly the footer footer_for() writes (any names): project page link, optional
-    rules link, home link. A line the user wrote never has this shape by accident."""
-    homes = {t("v_home_file"), "Home", "Ana Sayfa"}  # either UI language
-    home = "|".join(re.escape(h) + r"(?: \(ai-memory\))?" for h in sorted(homes))
-    own = (r"\[\[" + re.escape(pid) + r"/(?!rules\||candidates\||index\|)[^/\[\]|]+\|[^\[\]]+\]\]")
-    rules = r"\[\[" + re.escape(pid) + r"/rules\|[^\[\]]+\]\]"
-    return re.compile(rf"^{own}(?: · {rules})? · \[\[(?:{home})\|[^\[\]]+\]\]$")
-
-
 def sync_links(project: Path, name: str) -> int:
     """Footers of daily notes + the rule-candidates page, under the project's daily lock
     (render_daily writes the same files). A busy project is skipped, not waited for."""
     from locks import held
     pid = project.name
     footer = footer_for(pid, name)
-    ours = _our_footer(pid)
+    unmarked = _footer_links(pid, name)  # written before FOOTER_MARK existed: exact match only
     fixed = 0
     complete = True
     with held(project / "state" / "daily.lock", stale_seconds=120, wait_seconds=1) as got:
@@ -454,7 +453,7 @@ def sync_links(project: Path, name: str) -> int:
             lines = text.split("\n")
             idx = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
             last = lines[idx].strip() if idx >= 0 else ""
-            if last in LEGACY_FOOTERS or ours.match(last):
+            if last.endswith(FOOTER_MARK) or last in LEGACY_FOOTERS or last == unmarked:
                 lines[idx] = footer + ("\r" if lines[idx].endswith("\r") else "")
                 fixed += _write_if_changed(daily, "\n".join(lines))
         if (project / "candidates.md").is_file():

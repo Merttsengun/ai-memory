@@ -773,3 +773,14 @@ def test_session_start_hands_the_new_page_to_a_background_process(env: Path, mon
     session_start._ensure_project_page(data, "/work/fresh")
     assert calls and calls[0][2:] == ["--new-project", str(data), "/work/fresh"]
     assert not list(data.glob("*.md"))  # nothing written in the session's own process
+
+
+def test_only_marked_footers_are_rewritten(env: Path) -> None:
+    import vault
+    project = _project(env, "meet-6262626262626262", "/work/meet", "2026-10-01", "s")
+    daily = project / "daily" / "2026-10-01.md"
+    assert daily.read_text(encoding="utf-8").rstrip().endswith(vault.FOOTER_MARK)
+    mine = "# day\n\n[[meet-6262626262626262/Toplanti|Toplanti]] · [[Home|Home]]\n"
+    (project / "daily" / "2026-10-02.md").write_text(mine, encoding="utf-8")
+    vault.refresh_all()
+    assert (project / "daily" / "2026-10-02.md").read_text(encoding="utf-8") == mine
