@@ -12,7 +12,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded  # noqa: E402
+from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded, utf8_stdio  # noqa: E402
 from project_id import project_id  # noqa: E402
 
 
@@ -23,7 +23,7 @@ def main() -> int:
     if os.environ.get(INTERNAL_ENV):
         return 0
     try:
-        sys.stdin.reconfigure(encoding="utf-8")
+        utf8_stdio(stdin=True)
         hook_input = json.load(sys.stdin)
         cwd = hook_input.get("cwd")
         session_id = hook_input.get("session_id")

@@ -20,7 +20,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded, load_config  # noqa: E402
+from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded, load_config, utf8_stdio  # noqa: E402
 from texts import t  # noqa: E402
 
 GLOBAL_RULES_BYTES = 12000
@@ -105,8 +105,7 @@ def main() -> int:
     if os.environ.get(INTERNAL_ENV):
         return 0
     try:
-        sys.stdin.reconfigure(encoding="utf-8")
-        sys.stdout.reconfigure(encoding="utf-8")
+        utf8_stdio(stdin=True, stdout=True)
         raw = sys.stdin.read()
         hook = json.loads(raw) if raw.strip() else {}
     except (OSError, ValueError):

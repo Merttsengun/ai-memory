@@ -36,6 +36,7 @@ import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config import utf8_stdio  # noqa: E402
 from texts import t  # noqa: E402
 
 MAX_NAME = 200
@@ -675,7 +676,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--scan-all", action="store_true", help="tum yetimleri listele (salt okunur)")
     a = ap.parse_args(argv)
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        utf8_stdio(stdin=False, stdout=True)
     except (AttributeError, OSError):
         pass
     root = Path(a.root) if a.root else _default_projects_root()

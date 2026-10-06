@@ -18,7 +18,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
-from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded  # noqa: E402
+from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded, utf8_stdio  # noqa: E402
 
 
 def update_index(project_id: str, project_dir: str) -> None:
@@ -50,7 +50,7 @@ def main() -> int:
     parser.add_argument("--reason", choices=("sessionend", "precompact"), required=True)
     args = parser.parse_args()
     try:
-        sys.stdin.reconfigure(encoding="utf-8")
+        utf8_stdio(stdin=True)
         raw = sys.stdin.read()
         hook = json.loads(raw) if raw.strip() else {}
     except (OSError, ValueError):

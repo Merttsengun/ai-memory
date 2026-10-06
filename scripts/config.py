@@ -10,8 +10,10 @@ DEFAULTS, so a broken config never stops the hooks.
 from __future__ import annotations
 
 import fnmatch
+import io
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +105,16 @@ def load_config() -> dict[str, Any]:
     if not config["language"].strip():
         config["language"] = DEFAULTS["language"]
     return config
+
+
+def utf8_stdio(stdin: bool = True, stdout: bool = False) -> None:
+    """Hook input/output is UTF-8 JSON; Windows consoles default to another code page.
+    Only a real TextIOWrapper can be reconfigured: a replaced or missing stream (pythonw,
+    test capture) is left alone instead of crashing the hook."""
+    for name, wanted in (("stdin", stdin), ("stdout", stdout)):
+        stream = getattr(sys, name, None)
+        if wanted and isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
 
 
 def is_excluded(project_dir: str | None = None, project_id: str | None = None) -> bool:

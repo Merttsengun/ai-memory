@@ -29,6 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from config import (  # noqa: E402
     CONFIG_FILE, PROJECTS_ROOT, SCHEDULED_TASK, SCRIPTS_DIR, config_problem, is_excluded, load_config,
+    utf8_stdio,
 )
 from texts import t  # noqa: E402
 
@@ -339,5 +340,5 @@ def _start_block(project_data: Path) -> str:
 
 
 if __name__ == "__main__":
-    sys.stdout.reconfigure(encoding="utf-8")
+    utf8_stdio(stdin=False, stdout=True)
     print(json.dumps(compute(), ensure_ascii=False, indent=2))
