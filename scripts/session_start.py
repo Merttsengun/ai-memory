@@ -101,6 +101,20 @@ def build_context(project_data: Path, agent: str = "claude") -> str:
     return "\n\n".join(parts)
 
 
+def _ensure_project_page(project_data: Path, folder: str | None = None) -> None:
+    """A new project gets its page (and a line on the home page) right away, named after
+    its folder (recorded now, not only at session end)."""
+    try:
+        import vault
+        if folder and project_data.name not in vault.known_paths():
+            from session_end import update_index
+            update_index(project_data.name, folder)
+        if not any(vault._is_generated(p) for p in project_data.glob("*.md")):
+            vault.update(project_data)
+    except Exception:  # noqa: BLE001 -- navigation must never break session start
+        pass
+
+
 def main() -> int:
     if os.environ.get(INTERNAL_ENV):
         return 0
@@ -135,6 +149,7 @@ def main() -> int:
     project_data = PROJECTS_ROOT / project_id
     state_dir = project_data / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_project_page(project_data, project_dir)
 
     # Unfinished summaries + sessions whose hook never ran: detached, in the background.
     sweep = [sys.executable, str(SCRIPT_DIR / "sweep_stale.py"), "--memory-dir", str(project_data)]

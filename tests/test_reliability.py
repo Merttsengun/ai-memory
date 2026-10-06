@@ -61,7 +61,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
     for module in ("config", "texts", "redaction", "locks", "usage", "summarize", "codex_common", "codex_summarize",
-                   "health_report", "session_start", "project_id", "merge_projects", "sweep_stale"):
+                   "health_report", "session_start", "project_id", "merge_projects", "sweep_stale",
+                   "vault", "render_daily", "sweep_all"):
         if module in sys.modules:
             importlib.reload(sys.modules[module])
     return home
@@ -475,3 +476,142 @@ def test_path_ids_keep_case_where_the_file_system_does(env: Path) -> None:
     else:
         assert project_id.normalize_path("/work/Foo") != project_id.normalize_path("/work/foo")
     assert posixpath.normcase("/work/Foo") != posixpath.normcase("/work/foo")
+
+
+# ------------------------------------------------------------------ vault pages
+def _resolve_links(vault_root: Path) -> list[str]:
+    """Every [[target|label]] in the vault must point to an existing note: a path inside
+    the vault (with or without .md) or a unique note name, like Obsidian resolves them."""
+    import re
+    names: dict[str, list[Path]] = {}
+    for md in vault_root.rglob("*.md"):
+        names.setdefault(md.stem.casefold(), []).append(md)
+    broken = []
+    for md in vault_root.rglob("*.md"):
+        for target in re.findall(r"\[\[([^\]|#]+)", md.read_text(encoding="utf-8")):
+            path = vault_root / (target if target.endswith(".md") else target + ".md")
+            if path.exists():
+                continue
+            if "/" not in target and len(names.get(target.casefold(), [])) == 1:
+                continue
+            broken.append(f"{md.relative_to(vault_root)} -> {target}")
+    return broken
+
+
+def _project(home: Path, pid: str, path: str, day: str = "", summary: str = "") -> Path:
+    project = home / "projects" / pid
+    (project / "state").mkdir(parents=True, exist_ok=True)
+    index = home / "projects" / "index.json"
+    data = json.loads(index.read_text(encoding="utf-8")) if index.exists() else {}
+    data[pid] = path
+    index.write_text(json.dumps(data), encoding="utf-8")
+    if day:
+        (project / "entries" / day).mkdir(parents=True, exist_ok=True)
+        (project / "entries" / day / f"120000-{pid[:6]}.json").write_text(json.dumps({
+            "session_id": "s", "reason": "sessionend", "ts": f"{day}T12:00:00", "summary": summary,
+            "decisions": [], "next_steps": [], "warnings": [], "rule_candidates": []}), encoding="utf-8")
+        subprocess.run([sys.executable, str(REPO / "scripts" / "render_daily.py"), "--memory-dir", str(project),
+                        "--date", day], check=True, env={**os.environ, "AI_MEMORY_HOME": str(home)})
+    return project
+
+
+def test_same_named_projects_get_distinct_pages_and_links_resolve(env: Path) -> None:
+    import vault
+    a = _project(env, "app-aaaaaaaaaaaaaaaa", "/work/clients/app", "2026-10-01", "client A work")
+    b = _project(env, "app-bbbbbbbbbbbbbbbb", "/work/personal/app", "2026-10-02", "personal work")
+    (env / "projects" / "rules.md").write_text("global", encoding="utf-8")
+    (a / "rules.md").write_text("client A rules", encoding="utf-8")
+    vault.refresh_all()
+    names = vault.display_names([a.name, b.name])
+    assert names[a.name] == "app (clients)" and names[b.name] == "app (personal)"
+    assert (a / "app (clients).md").exists() and (b / "app (personal).md").exists()
+    home = (env / "projects" / "Home.md").read_text(encoding="utf-8")
+    assert "app (clients)" in home and "app (personal)" in home
+    assert "[[app-aaaaaaaaaaaaaaaa/rules|app (clients) rules]]" in (a / "app (clients).md").read_text(encoding="utf-8")
+    assert _resolve_links(env / "projects") == []
+
+
+def test_new_entry_updates_project_page_and_home(env: Path) -> None:
+    project = _project(env, "site-cccccccccccccccc", "/work/site", "2026-10-03", "first day")
+    page = project / "site.md"
+    assert page.exists() and "first day" in page.read_text(encoding="utf-8")  # render_daily -> vault.update
+    _project(env, "site-cccccccccccccccc", "/work/site", "2026-10-04", "second day")
+    text = page.read_text(encoding="utf-8")
+    assert text.index("site-cccccccccccccccc/daily/2026-10-04") < text.index("site-cccccccccccccccc/daily/2026-10-03")
+    assert "site" in (env / "projects" / "Home.md").read_text(encoding="utf-8")
+
+
+def test_new_project_gets_a_page_at_session_start(env: Path, tmp_path: Path) -> None:
+    import session_start
+    folder = tmp_path / "brand-new"
+    folder.mkdir()
+    data = env / "projects" / "brand-new-dddddddddddddddd"
+    (data / "state").mkdir(parents=True)
+    session_start._ensure_project_page(data, str(tmp_path / "Brand_New"))
+    assert (data / "Brand_New.md").exists()
+    assert "[[brand-new-dddddddddddddddd/Brand_New|Brand_New]]" in (env / "projects" / "Home.md").read_text(encoding="utf-8")
+
+
+def test_legacy_footers_are_fixed_without_touching_content(env: Path) -> None:
+    import vault
+    project = _project(env, "old-eeeeeeeeeeeeeeee", "/work/old")
+    (project / "daily").mkdir()
+    body = "# 2026-09-01\n\n## Session 2026-09-01T10:00 (sessionend)\n\nkept text [[rules]] inside\n\n---\n"
+    (project / "daily" / "2026-09-01.md").write_text(body + "[[rules]] · [[index|Tum Projeler]]\n", encoding="utf-8")
+    vault.refresh_all()
+    text = (project / "daily" / "2026-09-01.md").read_text(encoding="utf-8")
+    assert text.startswith(body)  # content untouched (even a [[rules]] inside the text)
+    assert "[[old-eeeeeeeeeeeeeeee/old|old]]" in text and "[[rules]] · [[index" not in text
+    assert "/rules|" not in text.split("---")[-1]  # no rules.md yet: no link to a missing note
+
+
+def test_moved_project_page_follows_the_new_name(env: Path) -> None:
+    import vault
+    project = _project(env, "proj-ffffffffffffffff", "/work/old-name", "2026-10-01", "x")
+    vault.refresh_all()
+    assert (project / "old-name.md").exists()
+    _project(env, "proj-ffffffffffffffff", "/work/new-name")
+    vault.refresh_all()
+    assert (project / "new-name.md").exists() and not (project / "old-name.md").exists()
+    assert (project / "rules.md").exists() is False  # nothing else was created or removed
+
+
+def test_obsidian_settings_are_merged_not_replaced(env: Path) -> None:
+    import vault
+    app = env / "projects" / ".obsidian" / "app.json"
+    vault.refresh_all()
+    assert not app.exists()  # vault never opened in Obsidian: nothing created
+    app.parent.mkdir(parents=True)
+    app.write_text('{"userIgnoreFilters": ["entries"], "showLineNumber": true}', encoding="utf-8")
+    vault.refresh_all()
+    data = json.loads(app.read_text(encoding="utf-8"))
+    assert data["showLineNumber"] is True and data["userIgnoreFilters"][0] == "entries"
+    assert "_merged" in data["userIgnoreFilters"] and "state" in data["userIgnoreFilters"]
+    app.write_text("{broken", encoding="utf-8")
+    vault.refresh_all()
+    assert app.read_text(encoding="utf-8") == "{broken"
+
+
+def test_candidates_never_point_to_the_generated_page(env: Path) -> None:
+    import vault
+    project = _project(env, "x-1111111111111111", "/work/x", "2026-10-01", "s")
+    text = (project / "candidates.md").read_text(encoding="utf-8")
+    assert "`x-1111111111111111/rules.md`" in text and "[[x-1111111111111111/x|" not in text
+    (project / "rules.md").write_text("r", encoding="utf-8")
+    vault.refresh_all()
+    assert "[[x-1111111111111111/rules|x" in (project / "candidates.md").read_text(encoding="utf-8")
+
+
+def test_obsidian_explorer_shows_readable_names(env: Path) -> None:
+    import vault
+    _project(env, "app-aaaaaaaaaaaaaaaa", "/work/clients/app", "2026-10-01", "a")
+    _project(env, "app-bbbbbbbbbbbbbbbb", '/work/my "x"/app', "2026-10-01", "b")
+    settings = env / "projects" / ".obsidian"
+    settings.mkdir()
+    (settings / "appearance.json").write_text('{"theme": "obsidian"}', encoding="utf-8")
+    vault.refresh_all()
+    css = (settings / "snippets" / "ai-memory.css").read_text(encoding="utf-8")
+    assert '[data-path="app-aaaaaaaaaaaaaaaa"]' in css and 'content: "app (clients)"' in css
+    assert 'content: "app (my \\"x\\")"' in css  # quotes escaped
+    data = json.loads((settings / "appearance.json").read_text(encoding="utf-8"))
+    assert data == {"theme": "obsidian", "enabledCssSnippets": ["ai-memory"]}

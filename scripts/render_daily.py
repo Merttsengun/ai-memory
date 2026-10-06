@@ -19,6 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from texts import t  # noqa: E402
+import vault  # noqa: E402
 
 
 def render(entries_dir: Path, date_str: str) -> str:
@@ -62,7 +63,7 @@ def render(entries_dir: Path, date_str: str) -> str:
                     lines.append(f"- {item}")
         lines.append("")
     lines.append("---")
-    lines.append(t("d_footer"))
+    lines.append(vault.daily_footer(entries_dir.parent.name))  # full-path links, readable labels
     lines.append("")
     return "\n".join(lines)
 
@@ -92,7 +93,8 @@ def render_candidates(memory_dir: Path) -> str:
             seen.add(key)
             rows.append((path.parent.name, item.strip()))
 
-    lines = [t("c_title"), "", t("c_intro"), ""]
+    pid = memory_dir.name
+    lines = [t("c_title"), "", t("c_intro", rules=vault.rules_or_page_link(pid)), ""]
     if not rows:
         lines.append(t("c_none"))
     lines += [f"- {date}: {text}" for date, text in rows]
@@ -129,6 +131,10 @@ def main() -> int:
             return 3  # Lock unavailable: DO NOT WRITE; caller records health, scheduler repairs it.
         write_atomic(daily_dir / f"{args.date}.md", render(entries_dir, args.date))
         write_candidates(memory_dir)
+    try:  # navigation pages (project page + home); never fails the daily note itself
+        vault.update(memory_dir)
+    except Exception:  # noqa: BLE001
+        pass
     return 0
 
 

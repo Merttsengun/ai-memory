@@ -35,7 +35,13 @@ def main() -> int:
         if is_claude_subagent() or is_excluded(cwd):
             return 0
 
-        state = PROJECTS_ROOT / project_id(cwd) / "state"
+        pid = project_id(cwd)
+        state = PROJECTS_ROOT / pid / "state"
+        try:  # readable project name for the vault pages (Claude's SessionEnd does the same)
+            from session_end import update_index
+            update_index(pid, cwd)
+        except OSError:
+            pass
         state.mkdir(parents=True, exist_ok=True)
         pending = state / f"codex-hookin-{uuid.uuid4().hex}.json"
         payload = {"cwd": cwd, "session_id": session_id, "transcript_path": transcript_path, "reason": args.reason}

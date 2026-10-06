@@ -159,11 +159,27 @@ def _take_over(lock: Path, stale_seconds: float) -> bool:
         again = _owner(lock)
         if again != first:
             return False
-        shutil.rmtree(lock, ignore_errors=True)
+        # Move the stale lock aside in ONE step, then delete it. On Windows a file that
+        # another process is reading at that moment cannot be removed, so an in-place
+        # rmtree could stop halfway and leave the lock behind; a rename is all-or-nothing
+        # and is simply retried. While the stale lock exists nobody else can create one,
+        # so the only thing we can move is that stale lock.
+        tomb = lock.with_name(f"{lock.name}.stale-{uuid.uuid4().hex[:8]}")
+        for _ in range(20):
+            try:
+                os.rename(lock, tomb)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            return False
+        shutil.rmtree(tomb, ignore_errors=True)
         try:
             lock.mkdir()
         except OSError:
-            return False
+            return False  # a plain acquire() got there first: it is the single winner
         return True
     finally:
         try:

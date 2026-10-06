@@ -301,6 +301,11 @@ def repair_daily(dry_run: bool) -> int:
     return fixed
 
 
+def _refresh_vault() -> int:
+    import vault
+    return vault.refresh_all()
+
+
 # ----------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     if os.environ.get(INTERNAL_ENV):
@@ -325,7 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         for name, step in (("claude", lambda: sweep_claude(args.dry_run)),
                            ("codex-kuyruga", lambda: enqueue_codex_missed(args.dry_run)),
                            ("codex-islenen", lambda: process_codex_jobs(args.dry_run)),
-                           ("gunluk-onarim", lambda: repair_daily(args.dry_run))):
+                           ("gunluk-onarim", lambda: repair_daily(args.dry_run)),
+                           ("sayfalar", lambda: 0 if args.dry_run else _refresh_vault())):
             try:
                 results[name] = step()
             except Exception as exc:  # noqa: BLE001 -- one step must not stop the others
@@ -341,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
                    f"claude-proje={claude[0] if isinstance(claude, tuple) else claude} "
                    f"claude-islenen={claude[1] if isinstance(claude, tuple) else '-'} "
                    f"codex-kuyruga={results['codex-kuyruga']} codex-islenen={results['codex-islenen']} "
-                   f"gunluk-onarim={results['gunluk-onarim']} "
+                   f"gunluk-onarim={results['gunluk-onarim']} sayfalar={results['sayfalar']} "
                    f"sure={time.time() - started:.0f}s")
         log_line(summary)
         print(summary)

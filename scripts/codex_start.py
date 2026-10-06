@@ -74,6 +74,9 @@ def main() -> int:
         except (OSError, ValueError):
             pass
         project_data = PROJECTS_ROOT / project_id(cwd)
+        (project_data / "state").mkdir(parents=True, exist_ok=True)
+        from session_start import _ensure_project_page
+        _ensure_project_page(project_data, cwd)
         recover_stale(project_data)
         from session_start import build_context
         context = build_context(project_data, "codex")

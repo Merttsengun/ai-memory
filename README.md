@@ -44,6 +44,7 @@ Each project gets its own folder in `~/.ai-memory/projects/<project-id>/`:
 | `<project>/daily/YYYY-MM-DD.md` | rendered from entries | the newest one, with its date and age |
 | `<project>/entries/YYYY-MM-DD/*.json` | summarizer, one file per session part | never (archive; grep it when needed) |
 | `<project>/candidates.md` | rendered from entries | never (for you to review) |
+| `projects/Home.md`, `<project>/<Name>.md` | `vault.py`, after every summary | never (navigation pages) |
 | `<project>/state/` | scripts (jobs, checkpoints, health log) | never |
 
 `rules.md` is the only **guaranteed** memory: it is injected unconditionally, so keep it short
@@ -235,7 +236,11 @@ python install.py --uninstall
 - To look further back than the latest daily note, ask the agent to grep
   `~/.ai-memory/projects/<id>/entries/`.
 - Skim `<project>/candidates.md` now and then and promote what you agree with.
-- Each project folder is Obsidian-friendly: daily notes link to `[[rules]]`.
+- Open `projects/` as an Obsidian vault and start at `Home.md` (`Ana Sayfa.md` in Turkish):
+  projects by last activity, each with a page named after its folder (same-named folders get
+  the parent folder added, e.g. `app (clients)`). Pages are regenerated after every summary,
+  for a new project at session start and on every sweep; raw records and archives are kept
+  out of search and graph. Run `python scripts/vault.py` to rebuild them by hand.
 
 ## Known limitations
 
