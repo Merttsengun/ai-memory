@@ -655,7 +655,8 @@ def test_names_stay_unique_and_valid(env: Path) -> None:
     names = vault.display_names(ids)
     assert len({n.casefold() for n in names.values()}) == len(ids)
     assert vault.page_file_name("con") == "con (project).md" and vault.page_file_name("a\x01b" * 60).endswith(".md")
-    assert len(vault.page_file_name("x" * 300)) <= 83
+    assert len(vault.page_file_name("😀" * 100).encode("utf-8")) <= 123  # Linux limit is bytes
+    assert all(c not in name for name in names.values() for c in "[]|")  # safe inside [[...|label]]
 
 
 def test_foreign_snippet_is_kept_and_session_start_never_waits(env: Path) -> None:
@@ -672,3 +673,36 @@ def test_foreign_snippet_is_kept_and_session_start_never_waits(env: Path) -> Non
     started = time.time()
     vault.update(project)
     assert time.time() - started < 1  # busy: skipped at once, the sweep catches up
+
+
+def test_indented_front_matter_is_not_ownership(env: Path) -> None:
+    import vault
+    project = _project(env, "app-7878787878787878", "/work/app")
+    note = project / "example.md"
+    note.write_text("---\ndescription: |\n  ai-memory-page: project\n  project_id: app-7878787878787878\n---\nx",
+                    encoding="utf-8")
+    vault.refresh_all()
+    assert note.exists() and not vault._is_ours(note, "project", project.name)
+
+
+def test_same_named_project_at_session_start_breaks_no_link(env: Path) -> None:
+    import vault
+    first = _project(env, "app-9090909090909090", "/work/one/app", "2026-10-01", "s")
+    vault.refresh_all()
+    assert (first / "app.md").exists()
+    second = _project(env, "app-9191919191919191", "/work/two/app")
+    vault.update(second)  # quick path: no footer rewrite yet
+    assert (first / "app (one).md").exists() and (first / "app.md").exists()
+    assert _resolve_links(env / "projects") == []
+    vault.refresh_all()  # footers now point to the new name; the old page goes
+    assert not (first / "app.md").exists() and _resolve_links(env / "projects") == []
+
+
+def test_no_link_to_a_users_note_when_no_page_can_be_written(env: Path) -> None:
+    import vault
+    project = _project(env, "app-9292929292929292", "/work/app")
+    (project / "app.md").write_text("mine", encoding="utf-8")
+    (project / "app (ai-memory).md").write_text("mine too", encoding="utf-8")
+    vault.refresh_all()
+    home = (env / "projects" / "Home.md").read_text(encoding="utf-8")
+    assert "[[app-9292929292929292/app" not in home and "app" in home
