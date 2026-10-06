@@ -132,7 +132,7 @@ def main() -> int:
         write_atomic(daily_dir / f"{args.date}.md", render(entries_dir, args.date))
         write_candidates(memory_dir)
     try:  # navigation pages (project page + home); never fails the daily note itself
-        vault.update(memory_dir)
+        vault.refresh_all()  # names of other projects can change too (same-named project)
     except Exception:  # noqa: BLE001
         pass
     return 0

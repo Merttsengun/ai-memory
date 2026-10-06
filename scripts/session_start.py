@@ -109,7 +109,7 @@ def _ensure_project_page(project_data: Path, folder: str | None = None) -> None:
         if folder and project_data.name not in vault.known_paths():
             from session_end import update_index
             update_index(project_data.name, folder)
-        if not any(vault._is_generated(p) for p in project_data.glob("*.md")):
+        if not any(vault._is_ours(p, "project", project_data.name) for p in project_data.glob("*.md")):
             vault.update(project_data)
     except Exception:  # noqa: BLE001 -- navigation must never break session start
         pass

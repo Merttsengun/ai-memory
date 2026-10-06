@@ -615,3 +615,60 @@ def test_obsidian_explorer_shows_readable_names(env: Path) -> None:
     assert 'content: "app (my \\"x\\")"' in css  # quotes escaped
     data = json.loads((settings / "appearance.json").read_text(encoding="utf-8"))
     assert data == {"theme": "obsidian", "enabledCssSnippets": ["ai-memory"]}
+
+
+def test_user_notes_are_never_overwritten_or_deleted(env: Path) -> None:
+    import vault
+    project = _project(env, "app-1212121212121212", "/work/app", "2026-10-01", "s")
+    for f in project.glob("*.md"):
+        if vault._is_ours(f, "project", project.name):
+            f.unlink()
+    (project / "app.md").write_text("my own note about app", encoding="utf-8")  # same name as the page
+    (project / "notes.md").write_text("---\ntitle: x\n---\nexample: ai-memory-page: project\n", encoding="utf-8")
+    (project / "rules.md").write_text("---\nai-memory-page: project\nproject_id: app-1212121212121212\n---\nrules",
+                                      encoding="utf-8")
+    (env / "projects" / "Home.md").write_text("my own home", encoding="utf-8")
+    vault.refresh_all()
+    assert (project / "app.md").read_text(encoding="utf-8") == "my own note about app"
+    assert (project / "notes.md").exists() and (project / "rules.md").exists()
+    assert vault._is_ours(project / "app (ai-memory).md", "project", project.name)
+    assert (env / "projects" / "Home.md").read_text(encoding="utf-8") == "my own home"
+    assert (env / "projects" / "Home (ai-memory).md").exists()
+    assert _resolve_links(env / "projects") == []
+
+
+def test_only_our_exact_footer_is_replaced(env: Path) -> None:
+    import vault
+    project = _project(env, "doc-3434343434343434", "/work/doc")
+    (project / "daily").mkdir()
+    mine = "# day\n\nsee [[doc-3434343434343434/daily/2026-09-01|yesterday]]\n"
+    (project / "daily" / "2026-09-02.md").write_text(mine, encoding="utf-8")
+    vault.refresh_all()
+    assert (project / "daily" / "2026-09-02.md").read_text(encoding="utf-8") == mine
+
+
+def test_names_stay_unique_and_valid(env: Path) -> None:
+    import vault
+    ids = ["app-aaaaaa1234567890", "app-bbbbbb1234567890", "app (x)-cccccccccccccccc", "con-dddddddddddddddd"]
+    for pid, path in zip(ids, ("/x/app", "/x/app", "/y/app (x)", "/z/con")):
+        _project(env, pid, path)
+    names = vault.display_names(ids)
+    assert len({n.casefold() for n in names.values()}) == len(ids)
+    assert vault.page_file_name("con") == "con (project).md" and vault.page_file_name("a\x01b" * 60).endswith(".md")
+    assert len(vault.page_file_name("x" * 300)) <= 83
+
+
+def test_foreign_snippet_is_kept_and_session_start_never_waits(env: Path) -> None:
+    import locks
+    import vault
+    settings = env / "projects" / ".obsidian" / "snippets"
+    settings.mkdir(parents=True)
+    (settings / "ai-memory.css").write_text("/* mine */", encoding="utf-8")
+    vault.refresh_all()
+    assert (settings / "ai-memory.css").read_text(encoding="utf-8") == "/* mine */"
+    project = env / "projects" / "new-5656565656565656"
+    (project / "state").mkdir(parents=True)
+    assert locks.acquire(env / "projects" / "_vault.lock", 120)
+    started = time.time()
+    vault.update(project)
+    assert time.time() - started < 1  # busy: skipped at once, the sweep catches up

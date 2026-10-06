@@ -88,19 +88,30 @@ def display_names(ids: list[str]) -> dict[str, str]:
             parent = os.path.basename(os.path.dirname(os.path.normpath(paths.get(pid, ""))))
             if parent:
                 names[pid] = f"{names[pid]} ({parent})"
-    seen: dict[str, int] = {}
-    for pid in ids:
-        seen[names[pid].casefold()] = seen.get(names[pid].casefold(), 0) + 1
-    for pid in ids:  # still the same (or no parent known): add a short id
-        if seen[names[pid].casefold()] > 1:
+    # Still the same (same parent, no parent known, or clashing with another project's
+    # plain name): add part of the id, longer each round, finally the whole id.
+    for width in (6, 10, None):
+        counts: dict[str, int] = {}
+        for pid in ids:
+            counts[names[pid].casefold()] = counts.get(names[pid].casefold(), 0) + 1
+        clashing = [pid for pid in ids if counts[names[pid].casefold()] > 1]
+        if not clashing:
+            break
+        for pid in clashing:
             match = ID_RE.match(pid)
-            names[pid] = f"{names[pid]} [{(match.group('hash') if match else pid)[-6:]}]"
+            tag = pid if width is None else (match.group("hash") if match else pid)[-width:]
+            names[pid] = f"{base(pid)} [{tag}]" if width is None else f"{names[pid]} [{tag}]"
     return names
 
 
+RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+OWN_FILES = {"rules", "candidates", "index"}  # the project's own notes: never a page name
+
+
 def page_file_name(name: str) -> str:
-    base = UNSAFE.sub("-", name).strip(" .") or "project"
-    if base.casefold() in ("rules", "candidates", "index"):  # never collide with the project's own files
+    """A file name that is valid on Windows, macOS and Linux."""
+    base = re.sub(r"[\x00-\x1f]", "", UNSAFE.sub("-", name)).strip(" .")[:80].strip(" .") or "project"
+    if base.casefold() in OWN_FILES or base.split(".")[0].casefold() in RESERVED:
         base += " (project)"
     return base + ".md"
 
@@ -161,13 +172,61 @@ def readable_date(day: str) -> str:
 
 
 # ------------------------------------------------------------------- links
+def _front_matter(path: Path) -> dict[str, str]:
+    """key: value lines of a leading --- block (only what we need, no YAML parser)."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            head = fh.read(1000)
+    except OSError:
+        return {}
+    lines = head.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    data = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return data
+        key, sep, value = line.partition(":")
+        if sep:
+            data[key.strip()] = value.strip()
+    return {}  # unterminated block: not ours
+
+
+def _is_ours(path: Path, kind: str, pid: str = "") -> bool:
+    """A page this module generated: its front matter names the page kind (and, for a
+    project page, THIS project's id). A user's note never matches by accident."""
+    meta = _front_matter(path)
+    return meta.get(PAGE_MARK) == kind and (not pid or meta.get("project_id") == pid)
+
+
+def _free_target(folder: Path, file_name: str, kind: str, pid: str = "") -> Path | None:
+    """Where to write a generated page: the wanted name if it is free or already ours,
+    else '<name> (ai-memory).md'. None when both are taken by the user's own notes."""
+    for candidate in (file_name, file_name[:-3] + " (ai-memory).md"):
+        path = folder / candidate
+        if not path.exists() or _is_ours(path, kind, pid):
+            return path
+    return None
+
+
+def home_target() -> Path | None:
+    return _free_target(PROJECTS_ROOT, f"{t('v_home_file')}.md", "home")
+
+
 def home_link() -> str:
-    name = t("v_home_file")
-    return f"[[{name}|{name}]]"
+    target = home_target()
+    stem = target.stem if target else t("v_home_file")
+    return f"[[{stem}|{t('v_home_file')}]]"
+
+
+def project_target(pid: str, name: str) -> Path | None:
+    return _free_target(PROJECTS_ROOT / pid, page_file_name(name), "project", pid)
 
 
 def project_page_link(pid: str, name: str) -> str:
-    return f"[[{pid}/{page_file_name(name)[:-3]}|{name}]]"
+    target = project_target(pid, name)
+    stem = target.stem if target else page_file_name(name)[:-3]
+    return f"[[{pid}/{stem}|{name}]]"
 
 
 def rules_link(pid: str, name: str) -> str:
@@ -216,15 +275,6 @@ def _write_if_changed(path: Path, content: str) -> bool:
         fh.write(content)
     os.replace(tmp, path)
     return True
-
-
-def _is_generated(path: Path) -> bool:
-    try:
-        with path.open(encoding="utf-8") as fh:
-            head = fh.read(400)
-    except OSError:
-        return False
-    return head.startswith("---") and f"{PAGE_MARK}:" in head
 
 
 def render_project_page(project: Path, name: str, path: str | None) -> str:
@@ -329,11 +379,14 @@ def render_home() -> str:
 
 
 def _sync_project_page(project: Path, names: dict[str, str], paths: dict[str, str]) -> bool:
-    name = names.get(project.name) or project.name
-    target = project / page_file_name(name)
-    changed = _write_if_changed(target, render_project_page(project, name, paths.get(project.name)))
-    for other in project.glob("*.md"):  # a renamed project leaves its old generated page behind
-        if other != target and _is_generated(other):
+    pid = project.name
+    name = names.get(pid) or pid
+    target = project_target(pid, name)
+    if target is None:
+        return False  # both names are the user's own notes: leave them alone
+    changed = _write_if_changed(target, render_project_page(project, name, paths.get(pid)))
+    for other in project.glob("*.md"):  # a renamed project leaves its old page behind
+        if other != target and other.stem.casefold() not in OWN_FILES and _is_ours(other, "project", pid):
             other.unlink(missing_ok=True)
             changed = True
     return changed
@@ -350,14 +403,24 @@ LEGACY_FOOTERS = {
 }
 
 
+def _our_footer(pid: str) -> re.Pattern[str]:
+    """Exactly the footer footer_for() writes (any names): project page link, optional
+    rules link, home link. A line the user wrote never has this shape by accident."""
+    link = r"\[\[[^\[\]|]+\|[^\[\]]+\]\]"
+    own = r"\[\[" + re.escape(pid) + r"/[^\[\]|]+\|[^\[\]]+\]\]"
+    rules = r"\[\[" + re.escape(pid) + r"/rules\|[^\[\]]+\]\]"
+    return re.compile(rf"^{own}(?: · {rules})? · {link}$")
+
+
 def sync_links(project: Path, name: str) -> int:
     """Footers of daily notes + the rule-candidates page, under the project's daily lock
-    (render_daily writes the same files)."""
+    (render_daily writes the same files). A busy project is skipped, not waited for."""
     from locks import held
     pid = project.name
     footer = footer_for(pid, name)
+    ours = _our_footer(pid)
     fixed = 0
-    with held(project / "state" / "daily.lock", stale_seconds=120, wait_seconds=10) as got:
+    with held(project / "state" / "daily.lock", stale_seconds=120, wait_seconds=1) as got:
         if not got:
             return 0  # busy: the next refresh will do it
         for daily in project.glob("daily/*.md"):
@@ -368,7 +431,7 @@ def sync_links(project: Path, name: str) -> int:
             lines = text.split("\n")
             idx = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
             last = lines[idx].strip() if idx >= 0 else ""
-            if last in LEGACY_FOOTERS or last.startswith(f"[[{pid}/"):
+            if last in LEGACY_FOOTERS or ours.match(last):
                 lines[idx] = footer + ("\r" if lines[idx].endswith("\r") else "")
                 fixed += _write_if_changed(daily, "\n".join(lines))
         if (project / "candidates.md").is_file():
@@ -402,6 +465,7 @@ def hide_technical() -> bool:
 
 
 SNIPPET = "ai-memory"
+SNIPPET_HEADER = "/* Generated by ai-memory (vault.py)"
 
 
 def _css_string(text: str) -> str:
@@ -412,7 +476,7 @@ def render_snippet(names: dict[str, str]) -> str:
     """CSS for Obsidian's file explorer: project folders show their readable name instead of
     the id (the folder itself is not renamed), technical folders are hidden."""
     lines = [
-        "/* Generated by ai-memory (vault.py); rewritten on every refresh. */",
+        SNIPPET_HEADER + "; rewritten on every refresh. */",
         "/* Technical folders: raw records, job files, merge archive. */",
         '.nav-folder:has(> .nav-folder-title[data-path$="/entries"]),',
         '.nav-folder:has(> .nav-folder-title[data-path$="/state"]),',
@@ -433,7 +497,14 @@ def obsidian_names(names: dict[str, str]) -> bool:
     settings = PROJECTS_ROOT / ".obsidian"
     if not settings.is_dir():
         return False
-    changed = _write_if_changed(settings / "snippets" / f"{SNIPPET}.css", render_snippet(names))
+    css = settings / "snippets" / f"{SNIPPET}.css"
+    try:
+        foreign = css.exists() and not _read_raw(css).startswith(SNIPPET_HEADER)
+    except OSError:
+        foreign = True
+    if foreign:
+        return False  # a snippet of the user's with the same name: not ours to overwrite
+    changed = _write_if_changed(css, render_snippet(names))
     appearance = settings / "appearance.json"
     try:
         data = json.loads(_read_raw(appearance)) if appearance.exists() else {}
@@ -449,14 +520,29 @@ def obsidian_names(names: dict[str, str]) -> bool:
     return changed
 
 
+def _write_home() -> bool:
+    target = home_target()
+    return _write_if_changed(target, render_home()) if target else False
+
+
 def update(project: Path) -> None:
-    """After a new entry / for a new project. Refreshes everything (cheap: a few dozen
-    small files), because a new or renamed project can change other projects' names."""
-    refresh_all()
+    """A new project at session start: its page + the home page, nothing else, and only
+    if nobody else is refreshing right now (never makes the session wait)."""
+    from locks import held
+    with held(PROJECTS_ROOT / "_vault.lock", stale_seconds=120, wait_seconds=0) as got:
+        if not got:
+            return  # render_daily / the sweep will do it
+        projects = project_dirs()
+        names = display_names([p.name for p in projects] + ([] if project in projects else [project.name]))
+        if project.is_dir() and ID_RE.match(project.name):
+            _sync_project_page(project, names, known_paths())
+        _write_home()
 
 
 def refresh_all() -> int:
     """Every project page, daily-note footer and candidates page + the home page.
+    Runs after a summary (in the background) and on every sweep. A project that fails
+    (e.g. an unwritable folder) is skipped; the others are still refreshed.
     Returns how many files changed."""
     from locks import held
     with held(PROJECTS_ROOT / "_vault.lock", stale_seconds=120, wait_seconds=20) as got:
@@ -465,11 +551,18 @@ def refresh_all() -> int:
         projects = project_dirs()
         names = display_names([p.name for p in projects])
         paths = known_paths()
-        changed = sum(_sync_project_page(p, names, paths) for p in projects)
-        changed += sum(sync_links(p, names[p.name]) for p in projects)
-        changed += _write_if_changed(PROJECTS_ROOT / f"{t('v_home_file')}.md", render_home())
-        changed += hide_technical()
-        changed += obsidian_names(names)
+        changed = 0
+        for project in projects:
+            try:
+                changed += _sync_project_page(project, names, paths)
+                changed += sync_links(project, names[project.name])
+            except (OSError, ValueError):
+                continue
+        for step in (_write_home, hide_technical, lambda: obsidian_names(names)):
+            try:
+                changed += step()
+            except (OSError, ValueError):
+                pass
         return changed
 
 
