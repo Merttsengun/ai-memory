@@ -338,7 +338,8 @@ def render_project_page(project: Path, name: str, path: str | None) -> str:
 def _project_row(project: Path, name: str) -> tuple[str, str]:
     days = _daily_dates(project)
     last = days[0] if days else ""
-    row = (f"| {project_page_link(project.name, name)} | {readable_date(last) if last else '—'} | "
+    link = project_page_link(project.name, name).replace("|", "\\|")  # a bare | ends the table cell
+    row = (f"| {link} | {readable_date(last) if last else '—'} | "
            f"{_entries(project)} | {t('v_yes') if (project / 'rules.md').is_file() else t('v_no')} |")
     return last, row
 
@@ -425,10 +426,11 @@ LEGACY_FOOTERS = {
 def _our_footer(pid: str) -> re.Pattern[str]:
     """Exactly the footer footer_for() writes (any names): project page link, optional
     rules link, home link. A line the user wrote never has this shape by accident."""
-    link = r"\[\[[^\[\]|]+\|[^\[\]]+\]\]"
-    own = r"\[\[" + re.escape(pid) + r"/[^\[\]|]+\|[^\[\]]+\]\]"
+    homes = {t("v_home_file"), "Home", "Ana Sayfa"}  # either UI language
+    home = "|".join(re.escape(h) + r"(?: \(ai-memory\))?" for h in sorted(homes))
+    own = (r"\[\[" + re.escape(pid) + r"/(?!rules\||candidates\||index\|)[^/\[\]|]+\|[^\[\]]+\]\]")
     rules = r"\[\[" + re.escape(pid) + r"/rules\|[^\[\]]+\]\]"
-    return re.compile(rf"^{own}(?: · {rules})? · {link}$")
+    return re.compile(rf"^{own}(?: · {rules})? · \[\[(?:{home})\|[^\[\]]+\]\]$")
 
 
 def sync_links(project: Path, name: str) -> int:
@@ -439,13 +441,15 @@ def sync_links(project: Path, name: str) -> int:
     footer = footer_for(pid, name)
     ours = _our_footer(pid)
     fixed = 0
+    complete = True
     with held(project / "state" / "daily.lock", stale_seconds=120, wait_seconds=1) as got:
         if not got:
             return -1  # busy: the next refresh will do it (caller keeps the old page)
         for daily in project.glob("daily/*.md"):
             try:
                 text = _read_raw(daily)  # keep the file's own line endings (LF or CRLF)
-            except OSError:
+            except (OSError, ValueError):
+                complete = False  # e.g. open elsewhere: keep the old page it may link to
                 continue
             lines = text.split("\n")
             idx = max((i for i, line in enumerate(lines) if line.strip()), default=-1)
@@ -456,7 +460,7 @@ def sync_links(project: Path, name: str) -> int:
         if (project / "candidates.md").is_file():
             import render_daily
             fixed += _write_if_changed(project / "candidates.md", render_daily.render_candidates(project))
-    return fixed
+    return fixed if complete else -1
 
 
 TECHNICAL = ("entries", "state", "_merged", "index.json", "aliases.json", "_health.json")
@@ -595,7 +599,18 @@ def refresh_all() -> int:
         return changed
 
 
+def new_project(project: Path, folder: str | None) -> None:
+    """Record the project's folder (readable name) and write its page + the home page."""
+    if folder and project.name not in known_paths():
+        from session_end import update_index
+        update_index(project.name, folder)
+    update(project)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--new-project":
+        new_project(Path(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else None)
+        sys.exit(0)
     started = time.time()
     count = refresh_all()
     print(f"{count} page(s) updated in {time.time() - started:.2f}s")

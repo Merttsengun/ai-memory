@@ -488,7 +488,7 @@ def _resolve_links(vault_root: Path) -> list[str]:
         names.setdefault(md.stem.casefold(), []).append(md)
     broken = []
     for md in vault_root.rglob("*.md"):
-        for target in re.findall(r"\[\[([^\]|#]+)", md.read_text(encoding="utf-8")):
+        for target in re.findall(r"\[\[([^\]|#\\]+)", md.read_text(encoding="utf-8")):
             path = vault_root / (target if target.endswith(".md") else target + ".md")
             if path.exists():
                 continue
@@ -547,7 +547,8 @@ def test_new_project_gets_a_page_at_session_start(env: Path, tmp_path: Path) -> 
     folder.mkdir()
     data = env / "projects" / "brand-new-dddddddddddddddd"
     (data / "state").mkdir(parents=True)
-    session_start._ensure_project_page(data, str(tmp_path / "Brand_New"))
+    import vault
+    vault.new_project(data, str(tmp_path / "Brand_New"))  # what session start runs in the background
     assert (data / "Brand_New.md").exists()
     assert "[[brand-new-dddddddddddddddd/Brand_New|Brand_New]]" in (env / "projects" / "Home.md").read_text(encoding="utf-8")
 
@@ -720,3 +721,55 @@ def test_old_page_is_kept_while_the_project_is_busy(env: Path) -> None:
     locks.release(first / "state" / "daily.lock", force=True)
     vault.refresh_all()
     assert not (first / "app.md").exists() and _resolve_links(env / "projects") == []
+
+
+def test_home_table_links_do_not_split_columns(env: Path) -> None:
+    import vault
+    _project(env, "web-5757575757575757", "/work/web", "2026-10-01", "s")
+    vault.refresh_all()
+    row = next(line for line in (env / "projects" / "Home.md").read_text(encoding="utf-8").splitlines()
+               if "web-5757575757575757" in line)
+    assert row.replace("\\|", "").count("|") == 5  # 4 columns
+
+
+def test_user_navigation_line_is_not_taken_for_our_footer(env: Path) -> None:
+    import vault
+    project = _project(env, "nav-5858585858585858", "/work/nav")
+    (project / "rules.md").write_text("r", encoding="utf-8")
+    (project / "daily").mkdir()
+    mine = ("# day\n\n[[nav-5858585858585858/daily/2026-10-01|Previous day]] · "
+            "[[nav-5858585858585858/rules|Rules]]\n")
+    (project / "daily" / "2026-10-02.md").write_text(mine, encoding="utf-8")
+    vault.refresh_all()
+    assert (project / "daily" / "2026-10-02.md").read_text(encoding="utf-8") == mine
+
+
+def test_unreadable_daily_keeps_the_old_page(env: Path, monkeypatch) -> None:
+    import vault
+    first = _project(env, "app-5959595959595959", "/work/one/app", "2026-10-01", "s")
+    vault.refresh_all()
+    _project(env, "app-6060606060606060", "/work/two/app")
+    real = vault._read_raw
+
+    def flaky(path: Path) -> str:
+        if path.name == "2026-10-01.md":
+            raise PermissionError("open in another program")
+        return real(path)
+    monkeypatch.setattr(vault, "_read_raw", flaky)
+    vault.refresh_all()
+    assert (first / "app.md").exists()  # the daily note still links to it
+    monkeypatch.setattr(vault, "_read_raw", real)
+    vault.refresh_all()
+    assert not (first / "app.md").exists() and _resolve_links(env / "projects") == []
+
+
+def test_session_start_hands_the_new_page_to_a_background_process(env: Path, monkeypatch) -> None:
+    import bg
+    import session_start
+    calls = []
+    monkeypatch.setattr(bg, "spawn_detached", lambda args, log: calls.append(args))
+    data = env / "projects" / "fresh-6161616161616161"
+    (data / "state").mkdir(parents=True)
+    session_start._ensure_project_page(data, "/work/fresh")
+    assert calls and calls[0][2:] == ["--new-project", str(data), "/work/fresh"]
+    assert not list(data.glob("*.md"))  # nothing written in the session's own process

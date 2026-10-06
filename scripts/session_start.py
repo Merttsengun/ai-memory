@@ -103,14 +103,15 @@ def build_context(project_data: Path, agent: str = "claude") -> str:
 
 def _ensure_project_page(project_data: Path, folder: str | None = None) -> None:
     """A new project gets its page (and a line on the home page) right away, named after
-    its folder (recorded now, not only at session end)."""
+    its folder. Done by a background process: the session never waits for it."""
     try:
         import vault
-        if folder and project_data.name not in vault.known_paths():
-            from session_end import update_index
-            update_index(project_data.name, folder)
-        if not any(vault._is_ours(p, "project", project_data.name) for p in project_data.glob("*.md")):
-            vault.update(project_data)
+        if any(vault._is_ours(p, "project", project_data.name) for p in project_data.glob("*.md")):
+            return
+        from bg import spawn_detached
+        spawn_detached([sys.executable, str(Path(vault.__file__).resolve()), "--new-project",
+                        str(project_data)] + ([folder] if folder else []),
+                       project_data / "state" / "vault.log")
     except Exception:  # noqa: BLE001 -- navigation must never break session start
         pass
 
