@@ -441,7 +441,7 @@ def sync_links(project: Path, name: str) -> int:
     fixed = 0
     with held(project / "state" / "daily.lock", stale_seconds=120, wait_seconds=1) as got:
         if not got:
-            return 0  # busy: the next refresh will do it
+            return -1  # busy: the next refresh will do it (caller keeps the old page)
         for daily in project.glob("daily/*.md"):
             try:
                 text = _read_raw(daily)  # keep the file's own line endings (LF or CRLF)
@@ -559,7 +559,10 @@ def update(project: Path) -> None:
         # has pointed the daily-note footers at the new ones, so no link breaks meanwhile.
         for other in projects + ([project] if project.is_dir() and project not in projects else []):
             if ID_RE.match(other.name):
-                _sync_project_page(other, names, paths, remove_old=False)
+                try:
+                    _sync_project_page(other, names, paths, remove_old=False)
+                except (OSError, ValueError):
+                    continue  # one unwritable folder must not stop the others
         _write_home()
 
 
@@ -579,8 +582,9 @@ def refresh_all() -> int:
         for project in projects:
             try:
                 changed += _sync_project_page(project, names, paths, remove_old=False)
-                changed += sync_links(project, names[project.name])
-                changed += _sync_project_page(project, names, paths)  # now drop the old page
+                fixed = sync_links(project, names[project.name])
+                if fixed >= 0:  # footers point to the new page: now drop the old one
+                    changed += fixed + _sync_project_page(project, names, paths)
             except (OSError, ValueError):
                 continue
         for step in (_write_home, hide_technical, lambda: obsidian_names(names)):

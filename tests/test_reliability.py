@@ -706,3 +706,17 @@ def test_no_link_to_a_users_note_when_no_page_can_be_written(env: Path) -> None:
     vault.refresh_all()
     home = (env / "projects" / "Home.md").read_text(encoding="utf-8")
     assert "[[app-9292929292929292/app" not in home and "app" in home
+
+
+def test_old_page_is_kept_while_the_project_is_busy(env: Path) -> None:
+    import locks
+    import vault
+    first = _project(env, "app-9393939393939393", "/work/one/app", "2026-10-01", "s")
+    vault.refresh_all()
+    _project(env, "app-9494949494949494", "/work/two/app")
+    assert locks.acquire(first / "state" / "daily.lock", 120)  # a summary is writing right now
+    vault.refresh_all()
+    assert (first / "app.md").exists() and _resolve_links(env / "projects") == []
+    locks.release(first / "state" / "daily.lock", force=True)
+    vault.refresh_all()
+    assert not (first / "app.md").exists() and _resolve_links(env / "projects") == []
