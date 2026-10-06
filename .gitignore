@@ -1,0 +1,8 @@
+# Never commit memory data or local state
+projects/
+config.json
+*.backup-*
+__pycache__/
+*.pyc
+.pytest_cache/
+.obsidian/

@@ -1,0 +1,4 @@
+{
+  "extraPaths": ["scripts"],
+  "pythonVersion": "3.9"
+}

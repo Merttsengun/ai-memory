@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "decisions": { "type": "array", "items": { "type": "string" } },
+    "next_steps": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "rule_candidates": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["summary", "decisions", "next_steps", "warnings", "rule_candidates"],
+  "additionalProperties": false
+}
