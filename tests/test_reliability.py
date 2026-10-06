@@ -784,3 +784,15 @@ def test_only_marked_footers_are_rewritten(env: Path) -> None:
     (project / "daily" / "2026-10-02.md").write_text(mine, encoding="utf-8")
     vault.refresh_all()
     assert (project / "daily" / "2026-10-02.md").read_text(encoding="utf-8") == mine
+
+
+def test_old_page_stays_while_an_unmatched_footer_links_to_it(env: Path) -> None:
+    import vault
+    first = _project(env, "app-6363636363636363", "/work/one/app")
+    vault.refresh_all()  # app.md exists, as written by the previous version
+    (first / "daily").mkdir()
+    old = "# d\n\nx\n\n---\n[[app-6363636363636363/app|app]] · [[Home|Home]]\n"  # unmarked, pre-marker
+    (first / "daily" / "2026-09-01.md").write_text(old, encoding="utf-8")
+    _project(env, "app-6464646464646464", "/work/two/app")  # renames the first page before any marking
+    vault.refresh_all()
+    assert (first / "app.md").exists() and _resolve_links(env / "projects") == []

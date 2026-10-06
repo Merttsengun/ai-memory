@@ -415,10 +415,27 @@ def _sync_project_page(project: Path, names: dict[str, str], paths: dict[str, st
         return False  # both names are the user's own notes: leave them alone
     changed = _write_if_changed(target, render_project_page(project, name, paths.get(pid)))
     for other in project.glob("*.md") if remove_old else ():  # a renamed project's old page
-        if other != target and other.stem.casefold() not in OWN_FILES and _is_ours(other, "project", pid):
+        if other != target and other.stem.casefold() not in OWN_FILES and _is_ours(other, "project", pid) \
+                and not _still_linked(project, other.stem):
             other.unlink(missing_ok=True)
             changed = True
     return changed
+
+
+def _still_linked(project: Path, stem: str) -> bool:
+    """Does any note of the project still link to this page? Then it is kept (a link
+    must never break); it goes on a later refresh, once nothing points to it."""
+    needles = (f"[[{project.name}/{stem}|", f"[[{project.name}/{stem}]]", f"[[{project.name}/{stem}\\|")
+    for note in [*project.glob("daily/*.md"), project / "candidates.md", project / "rules.md"]:
+        try:
+            text = _read_raw(note)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return True  # cannot check: keep it
+        if any(n in text for n in needles):
+            return True
+    return False
 
 
 # Footers written by earlier versions: a bare [[rules]] resolves to any of the vault's
