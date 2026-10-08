@@ -270,6 +270,10 @@ def main() -> int:
         pending.replace(claimed)
     except OSError:
         return 0
+    try:  # a rename keeps the old mtime: an hours-old job would look orphaned while running
+        os.utime(claimed)
+    except OSError:
+        pass
 
     def failed_attempt(state: Path, data: dict[str, Any], status: str) -> None:
         """Spend a try; after MAX_ATTEMPTS move the job to failed/ (visible, checked by hand)."""
@@ -386,6 +390,10 @@ def main() -> int:
                     written.append(entry.name)
                     render_daily(memory_dir, entry.parent.name)  # right after each part
                 mark_done(state, session_id, max(already, complete), read_mtime if last else 0, done_anchor)
+                try:  # still alive: a long multi-part job must not look orphaned after an hour
+                    os.utime(claimed)
+                except OSError:
+                    pass
             if not written:
                 health(state, "skipped:nothing-worth-saving")
             else:

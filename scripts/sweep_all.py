@@ -230,15 +230,9 @@ def process_codex_jobs(dry_run: bool) -> int:
     for state in sorted(PROJECTS_ROOT.glob("*/state")):
         if is_excluded(project_id=state.parent.name):
             continue
-        # Orphaned job of a dead summarizer: requeue after 1 hour.
-        for orphan in state.glob("codex-hookin-*.json.running-*"):
-            try:
-                if now - orphan.stat().st_mtime > 3600:
-                    original = orphan.with_name(orphan.name.split(".running-")[0])
-                    if not original.exists() and not dry_run:
-                        orphan.replace(original)
-            except OSError:
-                continue
+        if not dry_run:  # orphaned job of a dead summarizer: requeue after 1 hour (counted)
+            from codex_common import requeue_orphans
+            requeue_orphans(state, now)
         for job in state.glob("codex-hookin-*.json"):
             try:
                 mtime = job.stat().st_mtime
@@ -306,6 +300,40 @@ def _refresh_vault() -> int:
     return vault.refresh_all()
 
 
+def auto_isolation_test(dry_run: bool) -> str:
+    """After a Codex update, run the isolation test by itself (in the background).
+
+    Codex summaries stay blocked until the test passes for the new version; this only
+    removes the manual step. Runs only when a Codex job is waiting (no quota spent if
+    Codex is not used). The test itself (--auto) takes the lock, counts the try and
+    refuses after ISOLATION_MAX_ATTEMPTS per version. If all fail, the startup line
+    keeps warning "Codex özetleme durdu"."""
+    if dry_run or load_config()["pause_summaries"]:
+        return "-"
+    if not any(PROJECTS_ROOT.glob("*/state/codex-hookin-*.json")):
+        return "-"
+    import shutil
+    codex = shutil.which("codex")
+    if not codex:
+        return "-"
+    from codex_summarize import isolation_block
+    if not isolation_block(codex).startswith("blocked:isolation-untested"):
+        return "-"  # verified, or the version cannot be read (the test would fail too)
+    import codex_isolation_test as iso
+    try:  # a fresh lock = a test is running; a stale one (crash, shutdown) is taken over by the test
+        if time.time() - iso.ISOLATION_LOCK.stat().st_mtime < iso.ISOLATION_LOCK_STALE_SECONDS:
+            return "calisiyor"
+    except OSError:
+        pass
+    count = int(iso.auto_attempts().get(iso.codex_version(codex), 0))
+    if count >= iso.ISOLATION_MAX_ATTEMPTS:
+        return f"denendi-{count}"  # cheap check; the test enforces the limit itself
+    import bg
+    bg.spawn_detached([sys.executable, str(SCRIPT_DIR / "codex_isolation_test.py"), "--auto"],
+                      PROJECTS_ROOT.parent / "codex-isolation.log")
+    return "basladi"
+
+
 # ----------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     if os.environ.get(INTERNAL_ENV):
@@ -329,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         results = {}
         for name, step in (("claude", lambda: sweep_claude(args.dry_run)),
                            ("codex-kuyruga", lambda: enqueue_codex_missed(args.dry_run)),
+                           ("codex-izolasyon", lambda: auto_isolation_test(args.dry_run)),
                            ("codex-islenen", lambda: process_codex_jobs(args.dry_run)),
                            ("gunluk-onarim", lambda: repair_daily(args.dry_run)),
                            ("sayfalar", lambda: 0 if args.dry_run else _refresh_vault())):
@@ -349,6 +378,15 @@ def main(argv: list[str] | None = None) -> int:
                    f"codex-kuyruga={results['codex-kuyruga']} codex-islenen={results['codex-islenen']} "
                    f"gunluk-onarim={results['gunluk-onarim']} sayfalar={results['sayfalar']} "
                    f"sure={time.time() - started:.0f}s")
+        if results.get("codex-izolasyon", "-") != "-":
+            summary += f" codex-izolasyon={results['codex-izolasyon']}"
+        try:  # sleep counter: lets the health line ignore time the PC slept
+            import health_report
+            slept = health_report.sleep_seconds()
+            if slept is not None and not args.dry_run:
+                summary += f" uyku={slept}"
+        except Exception:  # noqa: BLE001
+            pass
         log_line(summary)
         print(summary)
     finally:

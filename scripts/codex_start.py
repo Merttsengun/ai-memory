@@ -17,7 +17,6 @@ from config import INTERNAL_ENV, PROJECTS_ROOT, is_excluded, utf8_stdio  # noqa:
 from project_id import project_id  # noqa: E402
 
 STALE_SECONDS = 300
-ORPHAN_SECONDS = 3600
 
 
 def recover_stale(project_data: Path) -> None:
@@ -25,16 +24,16 @@ def recover_stale(project_data: Path) -> None:
     if not state.is_dir():
         return
     now = time.time()
-    # A killed summarizer leaves its job named ".running-PID"; put it back after an hour.
-    for orphan in state.glob("codex-hookin-*.json.running-*"):
-        try:
-            if now - orphan.stat().st_mtime > ORPHAN_SECONDS:
-                original = orphan.with_name(orphan.name.split(".running-")[0])
-                if not original.exists():
-                    orphan.replace(original)
-        except OSError:
-            continue
-    for pending in state.glob("codex-hookin-*.json"):
+    from codex_common import requeue_orphans
+    requeue_orphans(state, now)
+    # At most ONE summarizer per session start (the oldest job): after a Codex update many
+    # jobs may be waiting, and starting them all at once would burn the quota. The sweep
+    # takes the rest, codex_jobs_per_sweep at a time.
+    try:
+        jobs = sorted(state.glob("codex-hookin-*.json"), key=lambda p: p.stat().st_mtime)
+    except OSError:  # a job finished (renamed) while sorting: the next start retries
+        return
+    for pending in jobs:
         try:
             if now - pending.stat().st_mtime < STALE_SECONDS:
                 continue
@@ -50,6 +49,7 @@ def recover_stale(project_data: Path) -> None:
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            return
         except OSError:
             continue
 

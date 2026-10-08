@@ -91,7 +91,43 @@ def _claude_done(memory_dir: Path) -> dict[str, float]:
     return done
 
 
-def _last_sweep() -> float | None:
+def _uptime_seconds() -> int | None:
+    """Seconds since boot, sleep included (Windows); None elsewhere or on error."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.GetTickCount64.restype = ctypes.c_ulonglong
+        return k32.GetTickCount64() // 1000
+    except (AttributeError, OSError):
+        return None
+
+
+def awake_seconds() -> int | None:
+    """Seconds the machine has been awake since boot, sleep excluded; None elsewhere or on error."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        awake = ctypes.c_ulonglong()
+        if not ctypes.windll.kernel32.QueryUnbiasedInterruptTime(ctypes.byref(awake)):
+            return None
+        return awake.value // 10_000_000
+    except (AttributeError, OSError):
+        return None
+
+
+def sleep_seconds() -> int | None:
+    """Seconds spent asleep/hibernated since boot; None elsewhere or on error."""
+    uptime, awake = _uptime_seconds(), awake_seconds()
+    if uptime is None or awake is None:
+        return None
+    return max(0, uptime - awake)
+
+
+def _last_sweep() -> tuple[float, int | None] | None:
+    """(time, sleep counter at that time) of the last real sweep."""
     try:
         lines = SWEEP_LOG.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -100,10 +136,28 @@ def _last_sweep() -> float | None:
         if " DRY " in f" {line} ":
             continue
         try:
-            return dt.datetime.fromisoformat(line.split(" ", 1)[0]).timestamp()
+            when = dt.datetime.fromisoformat(line.split(" ", 1)[0]).timestamp()
         except ValueError:
             continue
+        slept = next((f.split("=", 1)[1] for f in line.split() if f.startswith("uyku=")), None)
+        return when, int(slept) if slept and slept.isdigit() else None
     return None
+
+
+def _awake_since(when: float, slept_then: int | None, now: float) -> float:
+    """Wall time since `when`, minus time the machine slept or was off in between.
+
+    The scheduler cannot run while the PC sleeps, so only awake time counts as missed.
+    """
+    elapsed = now - when
+    uptime, awake = _uptime_seconds(), awake_seconds()
+    if uptime is None or awake is None:
+        return elapsed
+    if now - uptime > when:  # booted after `when`: only this boot's awake time counts
+        return min(elapsed, awake)
+    if slept_then is not None and uptime - awake >= slept_then - 5:  # counters round to seconds
+        return max(0.0, elapsed - max(0, uptime - awake - slept_then))
+    return elapsed  # old log line without uyku=: cannot tell, keep the old behavior
 
 
 def _codex_isolation() -> str:
@@ -296,8 +350,9 @@ def _start_block(project_data: Path) -> str:
         report = json.loads(HEALTH_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         report = None
-    last_sweep = _last_sweep()
-    if last_sweep is None or now - last_sweep > SCHEDULER_STALE_SECONDS:
+    sweep = _last_sweep()
+    last_sweep = sweep[0] if sweep else None
+    if sweep is None or _awake_since(*sweep, now) > SCHEDULER_STALE_SECONDS:
         when = _ago(now - last_sweep) if last_sweep else t("w_sched_never")
         warnings.append(t("w_sched", when=when, task=SCHEDULED_TASK))
         general = t("h_sched_bad")

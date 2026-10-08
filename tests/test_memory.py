@@ -197,7 +197,7 @@ def test_codex_rollout_is_parsed_without_injected_context(tmp_path: Path) -> Non
         json.dumps({"type": "response_item", "payload": {"type": "reasoning"}}),
     ]), encoding="utf-8")
     messages = codex_summarize.transcript_messages(rollout)
-    assert messages == ["**User:** Add a login page, [REDACTED]", "**Assistant:** Done, added login.tsx"]
+    assert messages == ["**User:** Add a login page, token=[REDACTED]", "**Assistant:** Done, added login.tsx"]
 
 
 def test_common_secret_formats_are_redacted() -> None:

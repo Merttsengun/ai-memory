@@ -254,7 +254,7 @@ def test_validation_is_strict(env: Path) -> None:
     assert summarize.validate_summary(json.dumps(good))
     assert summarize.validate_summary(json.dumps({**good, "decisions": ["d", 3]})) is None  # non-string item
     assert summarize.validate_summary(json.dumps({**good, "extra": 1})) is None
-    assert summarize.validate_summary(json.dumps({**good, "summary": "pw password=x"}))["summary"] == "pw [REDACTED]"
+    assert summarize.validate_summary(json.dumps({**good, "summary": "pw password=x"}))["summary"] == "pw password=[REDACTED]"
 
 
 def test_publish_never_overwrites(env: Path, tmp_path: Path) -> None:

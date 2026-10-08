@@ -27,7 +27,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_common import ISOLATION_OK_FILE, isolation_flags, isolation_stamp  # noqa: E402
-from config import INTERNAL_ENV  # noqa: E402
+from config import INTERNAL_ENV, MEMORY_ROOT  # noqa: E402
+
+# One test at a time (manual run + the sweep's automatic one): otherwise test A could
+# record an approval while test B, started after A deleted it, is still checking.
+ISOLATION_LOCK = MEMORY_ROOT / "codex-isolation.lock"
+ISOLATION_LOCK_STALE_SECONDS = 30 * 60  # three Codex calls of at most 300 s each
+# --auto (started by the sweep): at most this many runs per Codex version, counted here,
+# after the lock is taken, so only a test that really runs uses up a try.
+ISOLATION_ATTEMPTS_FILE = MEMORY_ROOT / "codex-isolation-attempts.json"
+ISOLATION_MAX_ATTEMPTS = 3  # the test is sometimes INVALID by chance
+
+
+def auto_attempts() -> dict[str, int]:
+    try:
+        attempts = json.loads(ISOLATION_ATTEMPTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return attempts if isinstance(attempts, dict) and "count" not in attempts else {}
+
+
+def _use_auto_attempt() -> bool:
+    """Count this automatic run; False (do not run) if the tries are used up or cannot be counted."""
+    codex = shutil.which("codex")
+    version = codex_version(codex) if codex else None
+    if not version:
+        return False
+    attempts = auto_attempts()
+    if int(attempts.get(version, 0)) >= ISOLATION_MAX_ATTEMPTS:
+        return False
+    attempts[version] = int(attempts.get(version, 0)) + 1
+    try:  # atomic: a half-written counter would read as {} and give the tries back
+        tmp = ISOLATION_ATTEMPTS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(attempts), encoding="utf-8")
+        os.replace(tmp, ISOLATION_ATTEMPTS_FILE)
+    except OSError:
+        return False  # an uncounted run could repeat forever
+    return True
 
 # "error" is a start-up notice (e.g. code mode disabled, "fail closed"), not a tool run.
 SAFE_ITEMS = {"agent_message", "reasoning", "error"}
@@ -68,6 +104,20 @@ def ask_to_read(codex: str, flags: list[str], cwd: str, target: str) -> tuple[in
 
 
 def main() -> int:
+    from locks import acquire, release
+    if not acquire(ISOLATION_LOCK, ISOLATION_LOCK_STALE_SECONDS):
+        print("Another isolation test is running; not started.")
+        return 4
+    try:
+        if "--auto" in sys.argv[1:] and not _use_auto_attempt():
+            print("Automatic tries for this Codex version are used up (or cannot be counted); not started.")
+            return 5
+        return _run()
+    finally:
+        release(ISOLATION_LOCK)
+
+
+def _run() -> int:
     ISOLATION_OK_FILE.unlink(missing_ok=True)  # old approval is void until this test passes
     codex = shutil.which("codex")
     if not codex:
@@ -117,6 +167,7 @@ def main() -> int:
         shutil.rmtree(outside, ignore_errors=True)
 
     if leaks:
+        ISOLATION_OK_FILE.unlink(missing_ok=True)  # never leave an approval behind a failed test
         print(f"FAILED ({version}): the summarizer could read -> {', '.join(leaks)}. Codex summaries stay paused.")
         return 1
     if unclear:
